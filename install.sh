@@ -1,177 +1,315 @@
 #!/bin/bash
 
-# This script installs Arch Linux automatically with KDE Plasma desktop environment.
-# It is intended to be run from an Arch Linux live environment.
-# It is recommended to run this script in a virtual machine first to test it.
-# This script is provided as-is and the author is not responsible for any damage caused by its use.
-# Use at your own risk.
+################################################################################
+# Automatic Arch Linux Installation Script with KDE Plasma
+# This script automates the installation of Arch Linux with KDE Plasma Desktop
+################################################################################
 
-# Variables - CONFIGURE THESE BEFORE RUNNING
-DISK="/dev/nvme0n1"         # Change this to your target disk
-HOSTNAME="archlinux"        # Change this to your desired hostname
-USERNAME="user"             # Change this to your desired username
-ROOT_PASSWORD="123"         # Root password
-USER_PASSWORD="123"         # User password
-TIMEZONE="Asia/Jakarta"     # Change this to your desired timezone
-LOCALE="en_US.UTF-8"        # Change this to your desired locale
-KEYMAP="us"                 # Change this to your desired keymap
-ETHERNET_INTERFACE="enp0s3" # Change this after checking with 'ip a'
-CPU_TYPE="amd"              # Change to "intel" for Intel CPUs
+set -e  # Exit on error
+set -u  # Exit on undefined variable
 
-# Partition variables (set if partitions already created manually)
-EFI_PARTITION="${DISK}p1"
-ROOT_PARTITION="${DISK}p2"
+################################################################################
+# Configuration Variables
+################################################################################
 
-# Pre-Installation Steps
-echo "Starting Arch Linux Installation with KDE Plasma"
+DISK="${DISK:-/dev/sda}"
+HOSTNAME="${HOSTNAME:-archbox}"
+USERNAME="${USERNAME:-testing}"
+PASSWORD="${PASSWORD:-123}"
+TIMEZONE="${TIMEZONE:-Asia/Jakarta}"
+LOCALE="${LOCALE:-en_US.UTF-8}"
+SWAPSIZE="${SWAPSIZE:-2G}"
+EFI_SIZE="${EFI_SIZE:-512MiB}"
 
-# Update mirror list with fastest mirrors for Indonesia
-echo "Updating mirror list..."
-reflector --country 'Indonesia' --age 12 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+################################################################################
+# Color Output Functions
+################################################################################
 
-# NOTE: Manual partitioning required before running this script
-# Run these commands manually:
-# wipefs -a /dev/nvme0n1
-# cfdisk /dev/nvme0n1
-# Create:
-#   - Partition 1: EFI System (512M-1G)
-#   - Partition 2: Linux filesystem (remaining space)
+print_info() {
+    echo -e "\e[1;34m[INFO]\e[0m $1"
+}
 
+print_success() {
+    echo -e "\e[1;32m[SUCCESS]\e[0m $1"
+}
+
+print_error() {
+    echo -e "\e[1;31m[ERROR]\e[0m $1"
+}
+
+print_warning() {
+    echo -e "\e[1;33m[WARNING]\e[0m $1"
+}
+
+################################################################################
+# Disk Partitioning
+################################################################################
+
+partition_disk() {
+    print_info "Partitioning disk: $DISK"
+    
+    # Clear existing partition table and create GPT
+    parted -s "$DISK" mklabel gpt
+    
+    # Create EFI partition
+    parted -s "$DISK" mkpart ESP fat32 1MiB "$EFI_SIZE"
+    parted -s "$DISK" set 1 esp on
+    
+    # Create root partition
+    parted -s "$DISK" mkpart primary ext4 "$EFI_SIZE" 100%
+    
+    print_success "Disk partitioned successfully"
+}
+
+################################################################################
 # Format Partitions
-echo "Formatting partitions..."
-mkfs.vfat -F 32 $EFI_PARTITION
-mkfs.ext4 $ROOT_PARTITION
+################################################################################
 
+format_partitions() {
+    print_info "Formatting partitions..."
+    
+    # Format EFI partition
+    mkfs.vfat -F 32 "${DISK}1"
+    
+    # Format root partition
+    mkfs.ext4 -F "${DISK}2"
+    
+    print_success "Partitions formatted successfully"
+}
+
+################################################################################
 # Mount Partitions
-echo "Mounting partitions..."
-mount $ROOT_PARTITION /mnt
-mkdir -p /mnt/boot/efi
-mkdir -p /mnt/home
-mount $EFI_PARTITION /mnt/boot/efi
+################################################################################
 
-# Generate fstab
-echo "Creating directory structure and generating fstab..."
-mkdir -p /mnt/etc
-genfstab -U -p /mnt >> /mnt/etc/fstab
+mount_partitions() {
+    print_info "Mounting partitions..."
+    
+    # Mount root partition
+    mount "${DISK}2" /mnt
+    
+    # Create and mount EFI partition
+    mkdir -p /mnt/boot/efi
+    mount "${DISK}1" /mnt/boot/efi
+    
+    # Create home directory
+    mkdir -p /mnt/home
+    
+    print_success "Partitions mounted successfully"
+}
 
+################################################################################
 # Install Base System
-echo "Installing base system..."
-pacstrap -K /mnt base linux linux-firmware
+################################################################################
 
-# Install Essential Packages
-echo "Installing essential packages..."
-# Install CPU microcode based on CPU type
-if [ "$CPU_TYPE" == "amd" ]; then
-    MICROCODE="amd-ucode"
-else
-    MICROCODE="intel-ucode"
+install_base_system() {
+    print_info "Installing base system..."
+    
+    pacstrap -K /mnt base linux linux-firmware
+    
+    print_success "Base system installed successfully"
+}
+
+################################################################################
+# Generate Fstab
+################################################################################
+
+generate_fstab() {
+    print_info "Generating fstab..."
+    
+    genfstab -U /mnt >> /mnt/etc/fstab
+    
+    print_success "Fstab generated successfully"
+}
+
+################################################################################
+# Configure System (runs inside chroot)
+################################################################################
+
+configure_system() {
+    print_info "Configuring system..."
+    
+    # Create configuration script to run inside chroot
+    cat > /mnt/root/configure.sh <<'CHROOT_EOF'
+#!/bin/bash
+set -e
+set -u
+
+# Import variables
+HOSTNAME="__HOSTNAME__"
+USERNAME="__USERNAME__"
+PASSWORD="__PASSWORD__"
+TIMEZONE="__TIMEZONE__"
+LOCALE="__LOCALE__"
+SWAPSIZE="__SWAPSIZE__"
+
+echo "[INFO] Installing essential packages..."
+pacman -S --noconfirm \
+    base-devel \
+    efibootmgr \
+    grub \
+    networkmanager \
+    git \
+    wget \
+    curl \
+    neovim \
+    nano \
+    man-db \
+    man-pages
+
+echo "[INFO] Detecting and installing CPU microcode..."
+if lscpu | grep -qi intel; then
+    pacman -S --noconfirm intel-ucode
+elif lscpu | grep -qi amd; then
+    pacman -S --noconfirm amd-ucode
 fi
 
-arch-chroot /mnt pacman -S --noconfirm $MICROCODE sof-firmware grub sudo efibootmgr base-devel git nano cpupower
+echo "[INFO] Installing KDE Plasma Desktop Environment..."
+pacman -S --noconfirm \
+    plasma-meta \
+    konsole \
+    dolphin \
+    kate \
+    ark \
+    spectacle \
+    gwenview \
+    okular \
+    firefox \
+    sddm \
+    sddm-kcm
 
-# Install Xorg and Audio
-echo "Installing Xorg and audio packages..."
-arch-chroot /mnt pacman -S --noconfirm xorg xorg-xinit pulseaudio pavucontrol
+echo "[INFO] Setting root password..."
+echo "root:$PASSWORD" | chpasswd
 
-# Install KDE Plasma Desktop Environment
-echo "Installing KDE Plasma..."
-arch-chroot /mnt pacman -S --noconfirm plasma-meta kde-applications sddm
+echo "[INFO] Creating user: $USERNAME"
+useradd -m -G wheel,storage,power,audio,video -s /bin/bash "$USERNAME"
+echo "$USERNAME:$PASSWORD" | chpasswd
 
-# Configure System
-echo "Configuring system..."
+echo "[INFO] Configuring sudo privileges..."
+mkdir -p /etc/sudoers.d
+echo "$USERNAME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/"$USERNAME"
+chmod 440 /etc/sudoers.d/"$USERNAME"
 
-# Set CPU governor to performance
-arch-chroot /mnt bash -c "echo 'governor=\"performance\"' > /etc/default/cpupower"
-arch-chroot /mnt systemctl enable cpupower
+echo "[INFO] Setting hostname..."
+echo "$HOSTNAME" > /etc/hostname
 
-# Enable SDDM display manager
-arch-chroot /mnt systemctl enable sddm
+echo "[INFO] Configuring hosts file..."
+cat > /etc/hosts <<HOSTS_EOF
+127.0.0.1   localhost
+::1         localhost
+127.0.1.1   $HOSTNAME.localdomain $HOSTNAME
+HOSTS_EOF
 
-# Compile kernel
-arch-chroot /mnt mkinitcpio -p linux
+echo "[INFO] Configuring timezone..."
+ln -sf /usr/share/zoneinfo/"$TIMEZONE" /etc/localtime
+hwclock --systohc
 
-# Set root password
-echo "Setting root password..."
-arch-chroot /mnt bash -c "echo 'root:$ROOT_PASSWORD' | chpasswd"
+echo "[INFO] Configuring locale..."
+sed -i "s/^#${LOCALE}/${LOCALE}/" /etc/locale.gen
+locale-gen
+echo "LANG=$LOCALE" > /etc/locale.conf
 
-# Create user
-echo "Creating user: $USERNAME"
-arch-chroot /mnt useradd -m -g users -G wheel $USERNAME
-arch-chroot /mnt bash -c "echo '$USERNAME:$USER_PASSWORD' | chpasswd"
+echo "[INFO] Generating initramfs..."
+mkinitcpio -P
 
-# Enable sudo for wheel group
-arch-chroot /mnt sed -i 's/^# %wheel ALL=(ALL:ALL) ALL/%wheel ALL=(ALL:ALL) ALL/' /etc/sudoers
+echo "[INFO] Installing and configuring GRUB..."
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id="Arch Linux" --recheck
+sed -i 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=3/' /etc/default/grub
+echo "GRUB_DISABLE_OS_PROBER=false" >> /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg
 
-# Install and configure GRUB bootloader
-echo "Installing GRUB bootloader..."
-arch-chroot /mnt grub-install --target=x86_64-efi --bootloader-id="Arch Linux" --recheck
-arch-chroot /mnt sed -i 's/GRUB_TIMEOUT=5/GRUB_TIMEOUT=3/' /etc/default/grub
-arch-chroot /mnt grub-mkconfig -o /boot/grub/grub.cfg
+echo "[INFO] Creating and configuring swapfile..."
+fallocate -l "$SWAPSIZE" /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap defaults 0 0' >> /etc/fstab
 
-# Disable journald logging (optional - for minimal systems)
-# arch-chroot /mnt sed -i 's/#Storage=auto/Storage=none/' /etc/systemd/journald.conf
+echo "[INFO] Enabling essential services..."
+systemctl enable NetworkManager
+systemctl enable sddm
 
-# Post-Installation Configuration
-echo "Configuring post-installation settings..."
+echo "[INFO] Configuring Neovim as default editor..."
+echo "export EDITOR=nvim" >> /etc/profile
+echo "export VISUAL=nvim" >> /etc/profile
 
-# Set DNS servers
-cat > /mnt/etc/resolv.conf << EOF
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-EOF
+echo "[INFO] Creating user Neovim configuration directory..."
+mkdir -p /home/"$USERNAME"/.config/nvim
+cat > /home/"$USERNAME"/.config/nvim/init.vim <<NVIM_EOF
+" Basic Neovim Configuration
+set number
+set relativenumber
+set autoindent
+set smartindent
+set tabstop=4
+set shiftwidth=4
+set expandtab
+set mouse=a
+set clipboard=unnamedplus
+syntax on
+filetype plugin indent on
+NVIM_EOF
+chown -R "$USERNAME":"$USERNAME" /home/"$USERNAME"/.config
 
-# Configure static IP (modify according to your network)
-cat > /mnt/etc/systemd/network/$ETHERNET_INTERFACE.network << EOF
-[Match]
-Name=$ETHERNET_INTERFACE
+echo "[INFO] Optimizing journald logs..."
+sed -i 's/^#Storage=.*/Storage=volatile/' /etc/systemd/journald.conf
+sed -i 's/^#SystemMaxUse=.*/SystemMaxUse=50M/' /etc/systemd/journald.conf
 
-[Network]
-Address=192.168.1.100/24
-Gateway=192.168.1.1
-EOF
+echo "[SUCCESS] System configuration completed!"
+CHROOT_EOF
 
-# Enable networkd
-arch-chroot /mnt systemctl enable systemd-networkd
+    # Replace placeholders with actual values
+    sed -i "s|__HOSTNAME__|$HOSTNAME|g" /mnt/root/configure.sh
+    sed -i "s|__USERNAME__|$USERNAME|g" /mnt/root/configure.sh
+    sed -i "s|__PASSWORD__|$PASSWORD|g" /mnt/root/configure.sh
+    sed -i "s|__TIMEZONE__|$TIMEZONE|g" /mnt/root/configure.sh
+    sed -i "s|__LOCALE__|$LOCALE|g" /mnt/root/configure.sh
+    sed -i "s|__SWAPSIZE__|$SWAPSIZE|g" /mnt/root/configure.sh
+    
+    # Make script executable
+    chmod +x /mnt/root/configure.sh
+    
+    # Run configuration script inside chroot
+    arch-chroot /mnt /root/configure.sh
+    
+    # Clean up
+    rm /mnt/root/configure.sh
+    
+    print_success "System configured successfully"
+}
 
-# Set hostname
-arch-chroot /mnt bash -c "echo '$HOSTNAME' > /etc/hostname"
+################################################################################
+# Cleanup and Finish
+################################################################################
 
-# Configure locale
-arch-chroot /mnt sed -i "s/#$LOCALE/$LOCALE/" /etc/locale.gen
-arch-chroot /mnt locale-gen
-arch-chroot /mnt bash -c "echo 'LANG=$LOCALE' > /etc/locale.conf"
+finish_installation() {
+    print_info "Finishing installation..."
+    
+    # Unmount all partitions
+    umount -R /mnt
+    
+    print_success "Installation completed successfully!"
+    print_info "System will reboot in 5 seconds..."
+    sleep 5
+    reboot
+}
 
-# Set timezone
-arch-chroot /mnt ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
-arch-chroot /mnt hwclock --systohc
+################################################################################
+# Main Installation Process
+################################################################################
 
-# Set keymap
-arch-chroot /mnt bash -c "echo 'KEYMAP=$KEYMAP' > /etc/vconsole.conf"
+main() {
+    print_info "Starting Arch Linux installation with KDE Plasma..."
+    print_warning "This will erase all data on $DISK!"
+    
+    # Run installation steps
+    partition_disk
+    format_partitions
+    mount_partitions
+    install_base_system
+    generate_fstab
+    configure_system
+    finish_installation
+}
 
-# Enable NTP
-arch-chroot /mnt timedatectl set-ntp true
-
-# Cleanup
-echo "Cleaning up..."
-arch-chroot /mnt pacman -Scc --noconfirm
-
-# Installation Complete
-echo "========================================="
-echo "Installation completed successfully!"
-echo "========================================="
-echo ""
-echo "Please review the following before rebooting:"
-echo "1. Check /mnt/etc/fstab for correct partition UUIDs"
-echo "2. Verify network interface name in /mnt/etc/systemd/network/"
-echo "3. Update static IP configuration if needed"
-echo ""
-echo "To complete installation:"
-echo "1. Exit the chroot environment (if inside)"
-echo "2. Run: umount -R /mnt"
-echo "3. Run: reboot"
-echo ""
-echo "After reboot:"
-echo "- Login as root or $USERNAME"
-echo "- SDDM should start automatically and load KDE Plasma"
-echo "- Check network with: ip a"
-echo "========================================="
+# Execute main function
+main
